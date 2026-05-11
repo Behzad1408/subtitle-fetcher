@@ -1,10 +1,10 @@
-name: Subsource Subtitle Downloader
+name: Subtitle Downloader
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Subsource.net subtitle page URL"
+        description: 'Subsource.net subtitle page URL'
         required: true
         type: string
 
@@ -19,12 +19,11 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl wget grep sed gzip unzip
+          sudo apt-get install -y -qq curl wget grep sed gzip unzip zip
 
       - name: Fetch the subtitle page
         run: |
           echo "::group::Downloading page..."
-          # ما وانمود می‌کنیم که یه مرورگر واقعی هستیم
           curl -sL -o page.html \
             -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
             -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
@@ -40,7 +39,6 @@ jobs:
           DOWNLOAD_URL=""
 
           echo "::group::Strategy 1: Looking for direct download links..."
-          # استراتژی 1: لینک‌های مستقیم به فایل‌های زیرنویس (srt, zip)
           DOWNLOAD_URL=$(grep -oiP 'https?://[^"'\''<> ]*\.(zip|srt|vtt|sub|ass)[^"'\''<> ]*' page.html | head -1)
           if [ -n "$DOWNLOAD_URL" ]; then
             echo "Found direct file link: $DOWNLOAD_URL"
@@ -49,7 +47,6 @@ jobs:
 
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "::group::Strategy 2: Looking for 'download' buttons/links..."
-            # استراتژی 2: لینک‌هایی که توشون کلمه download هست
             DOWNLOAD_URL=$(grep -oiP 'https?://[^"'\''<> ]*download[^"'\''<> ]*' page.html | head -1)
             if [ -n "$DOWNLOAD_URL" ]; then
               echo "Found download link: $DOWNLOAD_URL"
@@ -59,7 +56,6 @@ jobs:
 
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "::group::Strategy 3: Looking for data attributes or hidden links..."
-            # استراتژی 3: لینک‌های داخل data-* attributes که ممکنه داینامیک لود بشن
             DOWNLOAD_URL=$(grep -oiP '(data-url|data-link|data-download|data-file)\s*=\s*["'\''](https?://[^"'\'']+)' page.html | grep -oiP 'https?://[^"'\'']+' | head -1)
             if [ -n "$DOWNLOAD_URL" ]; then
               echo "Found data-attribute link: $DOWNLOAD_URL"
@@ -69,7 +65,6 @@ jobs:
 
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "::group::Strategy 4: Looking for /download/ or /get/ API endpoints..."
-            # استراتژی 4: API endpoints مخصوص دانلود
             DOWNLOAD_URL=$(grep -oiP 'https?://subsource\.net[^"'\''<> ]*(/download/|/get/|/dl/)[^"'\''<> ]*' page.html | head -1)
             if [ -n "$DOWNLOAD_URL" ]; then
               echo "Found API endpoint: $DOWNLOAD_URL"
@@ -79,7 +74,6 @@ jobs:
 
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "::group::Strategy 5: Looking for onclick or JavaScript redirects..."
-            # استراتژی 5: لینک‌هایی که داخل کدهای جاوااسکریپت هستن
             DOWNLOAD_URL=$(grep -oiP 'location\.href\s*=\s*["'\''](https?://[^"'\'']+)' page.html | grep -oiP 'https?://[^"'\'']+' | head -1)
             if [ -n "$DOWNLOAD_URL" ]; then
               echo "Found JS redirect link: $DOWNLOAD_URL"
@@ -87,7 +81,6 @@ jobs:
             echo "::endgroup::"
           fi
 
-          # اگه هنوز چیزی پیدا نشد، ۱۰۰ خط اول صفحه رو برای لاگ چاپ می‌کنیم
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "::error::Could not find download link automatically."
             echo "::group::Debug: First 150 lines of page source..."
@@ -104,7 +97,6 @@ jobs:
           DOWNLOAD_URL="${{ steps.find_link.outputs.download_url }}"
           echo "Downloading from: $DOWNLOAD_URL"
 
-          # دانلود با همان هدرهای مرورگر
           HTTP_CODE=$(curl -sL -o subtitle.file \
             -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
             -H "Accept: */*" \
@@ -115,7 +107,6 @@ jobs:
 
           echo "HTTP Status: $HTTP_CODE"
           echo "File size: $(wc -c < subtitle.file) bytes"
-          echo "File type: $(file -b subtitle.file)"
 
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::Download failed with HTTP $HTTP_CODE"
@@ -126,15 +117,8 @@ jobs:
         run: |
           mkdir -p output
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-          # تشخیص پسوند فایل
-          EXT=$(file --extension subtitle.file | cut -d'/' -f1)
-          if [ "$EXT" = "???" ] || [ -z "$EXT" ]; then
-            EXT="zip" # حدس می‌زنیم zip باشه
-          fi
-
-          FINAL_NAME="subtitle-${TIMESTAMP}.${EXT}"
-          cp subtitle.file "output/${FINAL_NAME}"
+          FINAL_NAME="subtitle-${TIMESTAMP}.zip"
+          zip "output/${FINAL_NAME}" subtitle.file
           echo "Saved as: ${FINAL_NAME}"
 
       - name: Upload as GitHub Artifact
