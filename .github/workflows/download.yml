@@ -1,0 +1,152 @@
+name: Subsource Subtitle Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Subsource.net subtitle page URL"
+        required: true
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl wget grep sed gzip unzip
+
+      - name: Fetch the subtitle page
+        run: |
+          echo "::group::Downloading page..."
+          # ما وانمود می‌کنیم که یه مرورگر واقعی هستیم
+          curl -sL -o page.html \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8" \
+            -H "Accept-Language: en-US,en;q=0.9,fa;q=0.8" \
+            -H "Referer: https://subsource.net/" \
+            "${{ inputs.url }}"
+          echo "Page size: $(wc -c < page.html) bytes"
+          echo "::endgroup::"
+
+      - name: Analyze page and find download link
+        id: find_link
+        run: |
+          DOWNLOAD_URL=""
+
+          echo "::group::Strategy 1: Looking for direct download links..."
+          # استراتژی 1: لینک‌های مستقیم به فایل‌های زیرنویس (srt, zip)
+          DOWNLOAD_URL=$(grep -oiP 'https?://[^"'\''<> ]*\.(zip|srt|vtt|sub|ass)[^"'\''<> ]*' page.html | head -1)
+          if [ -n "$DOWNLOAD_URL" ]; then
+            echo "Found direct file link: $DOWNLOAD_URL"
+          fi
+          echo "::endgroup::"
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "::group::Strategy 2: Looking for 'download' buttons/links..."
+            # استراتژی 2: لینک‌هایی که توشون کلمه download هست
+            DOWNLOAD_URL=$(grep -oiP 'https?://[^"'\''<> ]*download[^"'\''<> ]*' page.html | head -1)
+            if [ -n "$DOWNLOAD_URL" ]; then
+              echo "Found download link: $DOWNLOAD_URL"
+            fi
+            echo "::endgroup::"
+          fi
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "::group::Strategy 3: Looking for data attributes or hidden links..."
+            # استراتژی 3: لینک‌های داخل data-* attributes که ممکنه داینامیک لود بشن
+            DOWNLOAD_URL=$(grep -oiP '(data-url|data-link|data-download|data-file)\s*=\s*["'\''](https?://[^"'\'']+)' page.html | grep -oiP 'https?://[^"'\'']+' | head -1)
+            if [ -n "$DOWNLOAD_URL" ]; then
+              echo "Found data-attribute link: $DOWNLOAD_URL"
+            fi
+            echo "::endgroup::"
+          fi
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "::group::Strategy 4: Looking for /download/ or /get/ API endpoints..."
+            # استراتژی 4: API endpoints مخصوص دانلود
+            DOWNLOAD_URL=$(grep -oiP 'https?://subsource\.net[^"'\''<> ]*(/download/|/get/|/dl/)[^"'\''<> ]*' page.html | head -1)
+            if [ -n "$DOWNLOAD_URL" ]; then
+              echo "Found API endpoint: $DOWNLOAD_URL"
+            fi
+            echo "::endgroup::"
+          fi
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "::group::Strategy 5: Looking for onclick or JavaScript redirects..."
+            # استراتژی 5: لینک‌هایی که داخل کدهای جاوااسکریپت هستن
+            DOWNLOAD_URL=$(grep -oiP 'location\.href\s*=\s*["'\''](https?://[^"'\'']+)' page.html | grep -oiP 'https?://[^"'\'']+' | head -1)
+            if [ -n "$DOWNLOAD_URL" ]; then
+              echo "Found JS redirect link: $DOWNLOAD_URL"
+            fi
+            echo "::endgroup::"
+          fi
+
+          # اگه هنوز چیزی پیدا نشد، ۱۰۰ خط اول صفحه رو برای لاگ چاپ می‌کنیم
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "::error::Could not find download link automatically."
+            echo "::group::Debug: First 150 lines of page source..."
+            head -n 150 page.html
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "download_url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+          echo "✅ Final download URL: $DOWNLOAD_URL"
+
+      - name: Download the subtitle file
+        run: |
+          DOWNLOAD_URL="${{ steps.find_link.outputs.download_url }}"
+          echo "Downloading from: $DOWNLOAD_URL"
+
+          # دانلود با همان هدرهای مرورگر
+          HTTP_CODE=$(curl -sL -o subtitle.file \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Accept: */*" \
+            -H "Referer: ${{ inputs.url }}" \
+            -H "Origin: https://subsource.net" \
+            -w "%{http_code}" \
+            "$DOWNLOAD_URL")
+
+          echo "HTTP Status: $HTTP_CODE"
+          echo "File size: $(wc -c < subtitle.file) bytes"
+          echo "File type: $(file -b subtitle.file)"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Download failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Prepare and upload artifact
+        run: |
+          mkdir -p output
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+
+          # تشخیص پسوند فایل
+          EXT=$(file --extension subtitle.file | cut -d'/' -f1)
+          if [ "$EXT" = "???" ] || [ -z "$EXT" ]; then
+            EXT="zip" # حدس می‌زنیم zip باشه
+          fi
+
+          FINAL_NAME="subtitle-${TIMESTAMP}.${EXT}"
+          cp subtitle.file "output/${FINAL_NAME}"
+          echo "Saved as: ${FINAL_NAME}"
+
+      - name: Upload as GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: subtitle-files
+          path: output/
+          retention-days: 7
+
+      - name: Show summary
+        run: |
+          echo "### ✅ Subtitle Downloaded Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source URL:** ${{ inputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Download from the 'Artifacts' section at the top of this run.**" >> $GITHUB_STEP_SUMMARY
+          echo "- Files will be available for 7 days." >> $GITHUB_STEP_SUMMARY
